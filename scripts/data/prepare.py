@@ -41,10 +41,9 @@ from template import Templates
 import nltk
 try:
     nltk.data.find('tokenizers/punkt')
-    # nltk.data.find('tokenizers/punkt_tab')
 except LookupError:
     nltk.download('punkt')
-    nltk.download('punkt_tab')
+ 
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--save_dir", type=Path, required=True, help='dataset folder to save dataset')
@@ -60,7 +59,6 @@ parser.add_argument("--model_template_type", type=str, default='base', help='Opt
 parser.add_argument("--remove_newline_tab", action='store_true', help='remove `\n` and `\t` in all strings.')
 parser.add_argument("--chunk_idx", type=int, default=0, help='index of current split chunk')
 parser.add_argument("--chunk_amount", type=int, default=1, help='size of split chunk')
-parser.add_argument("--prepare_for_ns", action='store_true')
 
 args = parser.parse_args()
 
@@ -85,19 +83,11 @@ def main():
 
     # Add templates
     assert args.model_template_type in Templates, print(f'{args.model_template_type} is not found in {Templates.keys()}')
-    model_template = Templates[args.model_template_type]
-
-    if args.prepare_for_ns:  
-        from tokenizer import select_tokenizer
-        TOKENIZER = select_tokenizer(args.tokenizer_type, args.tokenizer_path)
-        model_template_token = len(TOKENIZER.text_to_tokens(model_template))
-        model_template = Templates['base']
-
+    model_template = Templates[args.model_template_type]    
     task_template = config['template']
-    
+
     # Add answer prefix for all models
     answer_prefix = config['answer_prefix'] if 'answer_prefix' in config else ''
-
     config['template'] = model_template.format(task_template=task_template) + answer_prefix
 
     # Split task into multiple chunks 
@@ -114,8 +104,6 @@ def main():
         with open(save_file, "r") as f:
             data = f.readlines()
         if len(data) == args.num_samples: file_exists = True
-
-
 
     if not file_exists:
         try:
@@ -134,11 +122,8 @@ def main():
             {additional_args} \
             {f"--remove_newline_tab" if args.remove_newline_tab else ""} \
             {f"--pre_samples {pre_samples}" if config['task'] == 'qa' else ""} \
-            --template "{config['template']}" \
+            --template "{config['template']}"
             """
-            if args.prepare_for_ns:
-                command += f""" --model_template_token {model_template_token}"""
-            
             print(command)
             result = subprocess.run(command, 
                                     shell=True, 

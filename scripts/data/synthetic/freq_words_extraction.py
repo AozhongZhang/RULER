@@ -35,16 +35,11 @@ from tqdm import tqdm
 import random
 import string
 import numpy as np
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 import sys
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")) 
 from tokenizer import select_tokenizer
-from manifest_utils import write_manifest
-from scipy.special import zeta
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-from constants import TASKS
+from scipy.special import zeta 
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--save_dir", type=Path, required=True, help='dataset folder to save dataset')
@@ -62,7 +57,6 @@ parser.add_argument("--coded_wordlen", type=int, default=6, help="length of synt
 parser.add_argument("--vocab_size", type=int, default=-1, help='synthetic vocab size to sample from')
 parser.add_argument("--alpha", type=float, default=2.0, help='zeta distribution alpha')
 parser.add_argument("--add_fewshot", action="store_true", default=False)
-parser.add_argument("--model_template_token", type=int, default=0, help='used for nemo skills, minus num of model template token')
 
 args = parser.parse_args()
 random.seed(args.random_seed)
@@ -89,7 +83,7 @@ def generate_input_output(max_len, num_words=-1, coded_wordlen=6, vocab_size=200
         sampled_words = [x for wlst in sampled_words for x in wlst]
         random.Random(args.random_seed).shuffle(sampled_words)
         return template.format(context=' '.join(sampled_words), query=''), vocab[1:4]
-
+    
     if num_words > 0:
         num_words = num_words
         text, answer = gen_text(num_words)
@@ -110,57 +104,51 @@ def sys_kwext(num_samples: int, max_seq_length: int, incremental: int = 10):
     write_jsons = []
     tokens_to_generate = args.tokens_to_generate
 
-    max_seq_length -= args.model_template_token + tokens_to_generate
     vocab_size = max_seq_length // 50 if args.vocab_size == -1 else args.vocab_size
 
     # get number of words
-    input_max_len = max_seq_length
-    _, _, num_example_words = generate_input_output(input_max_len,
-                                                    coded_wordlen=args.coded_wordlen,
-                                                    vocab_size=vocab_size,
-                                                    incremental=input_max_len//32,
-                                                    alpha=args.alpha)
-    logger.info('num_example_words:', num_example_words)
+    input_max_len = max_seq_length 
+    _, _, num_example_words = generate_input_output(input_max_len, 
+                                                    coded_wordlen=args.coded_wordlen, 
+                                                    vocab_size=vocab_size, 
+                                                    incremental=input_max_len//32, 
+                                                    alpha=args.alpha) 
+    print('num_example_words:', num_example_words)
     # Generate samples
     for index in tqdm(range(num_samples)):
-
+        
         # construct input
-        input_max_len = max_seq_length
+        input_max_len = max_seq_length 
         input_text, answer, _ = generate_input_output(input_max_len,
                                                    num_words=num_example_words,
-                                                   coded_wordlen=args.coded_wordlen,
+                                                   coded_wordlen=args.coded_wordlen, 
                                                    vocab_size=vocab_size,
                                                    incremental=input_max_len//32,
                                                    alpha=args.alpha)
-
+        
 
         length = len(TOKENIZER.text_to_tokens(input_text)) + tokens_to_generate
 
         if args.remove_newline_tab:
             input_text = ' '.join(input_text.replace('\n', ' ').replace('\t', ' ').strip().split())
-
-        answer_prefix_index = input_text.rfind(TASKS['freq_words_extraction']['answer_prefix'][:10]) # use first 10 char of answer prefix to locate it
-        answer_prefix = input_text[answer_prefix_index:]
-        input_text = input_text[:answer_prefix_index]
+        
         formatted_output = {
             'index': index,
             "input": input_text,
             "outputs": answer,
             "length": length,
-            'length_w_model_temp': length + args.model_template_token,
-            'answer_prefix': answer_prefix,
         }
         write_jsons.append(formatted_output)
 
     return write_jsons
 
 
-def main():
+def main():   
     save_file = args.save_dir / f'{args.save_name}' / f'{args.subset}.jsonl'
     save_file.parent.mkdir(parents=True, exist_ok=True)
-    write_jsons = sys_kwext(num_samples=args.num_samples, max_seq_length=args.max_seq_length,
+    write_jsons = sys_kwext(num_samples=args.num_samples, max_seq_length=args.max_seq_length, 
                             incremental=10)
-
+    
     write_manifest(save_file, write_jsons)
 
 if __name__=="__main__":

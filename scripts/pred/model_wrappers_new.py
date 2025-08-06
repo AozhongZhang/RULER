@@ -17,15 +17,39 @@ import logging
 import requests
 import torch
 from typing import Dict, List, Optional
+from transformers.cache_utils import QuantizedCacheConfig
 
 
 class HuggingFaceModel:
-    def __init__(self, name_or_path: str, **generation_kwargs) -> None:
+    def __init__(self, name_or_path: str, method: str, quant_method: str, **generation_kwargs) -> None:
         from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+
+        # if quant_method == "fp8quant":
+        #     print(quant_method)
+        #     # self.quant = "quantized"
+        #     from pyramidkv.quantcache import FP8QuantizedCache
+        #     from transformers import cache_utils
+        #     # from transformers.cache_utils import HQQQuantizedCache
+        #     cache_utils.HQQQuantizedCache = FP8QuantizedCache
+
+        # from pyramidkv.monkeypatch import replace_llama
+        # replace_llama(method.lower())
 
         self.tokenizer = AutoTokenizer.from_pretrained(name_or_path, trust_remote_code=True)
 
         model_kwargs = None
+
+            # cache_utils.HQQQuantizedCache = FP8QuantizedCache
+        #     cache_config = {
+        #         "nbits": 8,
+        #         "backend": "HQQ",
+        #         "device": "cuda",
+        #         "residual_length": 1,
+        #         "axis_key": 1,
+        #         "q_group_size": 64,
+        #     }
+        #     model_kwargs = {"cache_implementation": "quantized",
+        #                     "cache_config": cache_config,}
         # if 'Yarn-Llama' in name_or_path:
         #     model_kwargs = None
         # else:
@@ -45,7 +69,31 @@ class HuggingFaceModel:
         except:
             self.pipeline = None
             self.model = AutoModelForCausalLM.from_pretrained(name_or_path, trust_remote_code=True, device_map="auto", torch_dtype=torch.float16,)
-            
+        
+        if method != "FullKV":
+            max_capacity_prompts = 1024
+            if method.lower() in ["snapkv","pyramidkv","h2o","cam", "l2norm"]:
+                window_sizes = 8
+            elif method.lower() in ["streamingllm"]:
+                window_sizes = max_capacity_prompts - 4
+
+            kernel_sizes = 7
+            pooling = "maxpool"
+
+            layers = len(self.model.model.layers)
+            # check if window_sizes is a list
+            if not isinstance(window_sizes, list):
+                window_sizes = [window_sizes] * layers
+            if not isinstance(max_capacity_prompts, list):
+                max_capacity_prompts = [max_capacity_prompts] * layers
+            if not isinstance(kernel_sizes, list):
+                kernel_sizes = [kernel_sizes] * layers
+            for i in range(layers):
+                self.model.model.layers[i].self_attn.config.window_size = window_sizes[i]
+                self.model.model.layers[i].self_attn.config.max_capacity_prompt = max_capacity_prompts[i]
+                self.model.model.layers[i].self_attn.config.kernel_size = kernel_sizes[i]
+                self.model.model.layers[i].self_attn.config.pooling = pooling
+
         self.generation_kwargs = generation_kwargs
         self.stop = self.generation_kwargs.pop('stop')
 
@@ -61,14 +109,22 @@ class HuggingFaceModel:
 
     def process_batch(self, prompts: List[str], **kwargs) -> List[dict]:
         if self.pipeline is None:
+            print("using generate!")
             inputs = self.tokenizer(prompts, return_tensors="pt", padding=True).to(self.model.device)
             generated_ids = self.model.generate(
                 **inputs,
+                cache_implementation="quantized",
+                cache_config=QuantizedCacheConfig(nbits=4, backend="HQQ", axis_key=1, axis_value=0, residual_length=128, device="cuda", q_group_size=64), 
+                # cache_config={"nbits": 8, "backend": "HQQ","device":"cuda","residual_length":1,"axis_key":1,"q_group_size":64},
                 **self.generation_kwargs
             )
             generated_texts = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
         else:
-            output = self.pipeline(text_inputs=prompts, **self.generation_kwargs, )
+            print(self.pipeline)
+            output = self.pipeline(text_inputs=prompts, 
+                                   cache_implementation="quantized",
+                                   cache_config=QuantizedCacheConfig(nbits=4, backend="HQQ", axis_key=1, axis_value=0, residual_length=128, device="cuda", q_group_size=64),
+                                   **self.generation_kwargs, )
             assert len(output) == len(prompts)
             # output in the form of a list of list of dictionaries
             # outer list len = batch size

@@ -15,7 +15,7 @@
 niah_single_1:
   task: niah
   args:
-    type_haystack: noise
+    type_haystack: repeat
     type_needle_k: words
     type_needle_v: numbers
     num_needle_k: 1
@@ -95,7 +95,6 @@ niah_multiquery:
 vt:
   task: variable_tracking
   args:
-    type_haystack: noise
     num_chains: 1
     num_hops: 4
 

@@ -26,8 +26,6 @@ from tenacity import (
 def select_tokenizer(tokenizer_type, tokenizer_path):
     if tokenizer_type == 'nemo':
         return NeMoSentencePieceTokenizer(model_path=tokenizer_path)
-    elif tokenizer_type == 'nemo_tiktoken':
-        return NeMoTikTokenTokenizer(model_path=tokenizer_path)
     elif tokenizer_type == 'hf':
         return HFTokenizer(model_path=tokenizer_path)
     elif tokenizer_type == 'openai':
@@ -45,22 +43,6 @@ class NeMoSentencePieceTokenizer:
     def __init__(self, model_path) -> None:
         from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
         self.tokenizer = SentencePieceTokenizer(model_path=model_path)
-    
-    def text_to_tokens(self, text: str) -> List[str]:
-        tokens = self.tokenizer.text_to_tokens(text)
-        return tokens
-
-    def tokens_to_text(self, tokens: List[int]) -> str:
-        text = self.tokenizer.tokens_to_text(tokens)
-        return text
-
-class NeMoTikTokenTokenizer:
-    """
-    Tokenizer from NeMo SentencePieceTokenizer
-    """
-    def __init__(self, model_path) -> None:
-        from nemo.collections.common.tokenizers.tiktoken_tokenizer import TiktokenTokenizer
-        self.tokenizer = TiktokenTokenizer(vocab_file=model_path)
     
     def text_to_tokens(self, text: str) -> List[str]:
         tokens = self.tokenizer.text_to_tokens(text)

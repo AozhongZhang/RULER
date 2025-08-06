@@ -33,16 +33,11 @@ from pathlib import Path
 from tqdm import tqdm
 import random
 import numpy as np
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 import sys
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")) 
 from tokenizer import select_tokenizer
-from manifest_utils import write_manifest
-import logging
 
-logging.basicConfig(level=logging.INFO, force=True)
-logger = logging.getLogger(__name__)
-
-from constants import TASKS
 
 parser = argparse.ArgumentParser()
 # Basic Configurations
@@ -58,7 +53,7 @@ parser.add_argument("--pre_samples", type=int, default=0, help='number of sample
 parser.add_argument("--random_seed", type=int, default=42)
 parser.add_argument("--template", type=str, required=True, help='prompt template')
 parser.add_argument("--remove_newline_tab", action='store_true', help='remove `\n` and `\t` in all strings.')
-parser.add_argument("--model_template_token", type=int, default=0, help='used for nemo skills, minus num of model template token')
+
 # Complexity Configurations
 parser.add_argument("--dataset", type=str, required=True, help='dataset file')
 
@@ -73,7 +68,7 @@ TOKENIZER = select_tokenizer(args.tokenizer_type, args.tokenizer_path)
 def read_squad(file):
     with open(file) as f:
         data = json.load(f)
-
+        
     total_docs = [p['context'] for d in data['data'] for p in d['paragraphs']]
     total_docs = sorted(list(set(total_docs)))
     total_docs_dict = {c: idx for idx, c in enumerate(total_docs)}
@@ -90,7 +85,7 @@ def read_squad(file):
                         'context': [total_docs_dict[p['context']]],
                         'more_context': [idx for idx in more_docs if idx != total_docs_dict[p['context']]]
                     })
-
+                        
     return total_qas, total_docs
 
 # Read Hotpot QA dataset
@@ -101,7 +96,7 @@ def read_hotpotqa(file):
     total_docs = [f"{t}\n{''.join(p)}" for d in data for t, p in d['context']]
     total_docs = sorted(list(set(total_docs)))
     total_docs_dict = {c: idx for idx, c in enumerate(total_docs)}
-
+    
     total_qas = []
     for d in data:
         total_qas.append({
@@ -109,7 +104,7 @@ def read_hotpotqa(file):
             'outputs': [d['answer']],
             'context': [total_docs_dict[f"{t}\n{''.join(p)}"] for t, p in d['context']],
         })
-
+        
     return total_qas, total_docs
 
 
@@ -133,65 +128,45 @@ def generate_input_output(index, num_docs):
             all_docs = curr_docs + curr_more + random.sample(addition_docs, max(0, num_docs - len(curr_docs) - len(curr_more)))
         else:
             all_docs = curr_docs + random.sample(curr_more, num_docs - len(curr_docs))
-
+    
         all_docs = [DOCS[idx] for idx in all_docs]
     else:
-        # Repeat DOCS as many times as needed and slice to num_docs
-        repeats = (num_docs + len(DOCS) - 1) // len(DOCS)  # Ceiling division
-        all_docs = (DOCS * repeats)[:num_docs]
-
+        all_docs = DOCS
+        
     random.Random(args.random_seed).shuffle(all_docs)
-
+    
     context = '\n\n'.join([DOCUMENT_PROMPT.format(i=i+1, document=d) for i, d in enumerate(all_docs)])
     input_text = args.template.format(
-        context=context,
+        context=context, 
         query=curr_q
     )
     return input_text, curr_a
 
 
-def generate_samples(num_samples: int, max_seq_length: int, save_dir: str, incremental: int = 10):
-
+def generate_samples(num_samples: int, max_seq_length: int, save_dir: str, incremental: int = 10): 
+    
     write_jsons = []
     tokens_to_generate = args.tokens_to_generate
-    max_seq_length -= args.model_template_token
-
-    # Estimate tokens per question to determine reasonable upper bound
-    sample_input_text, _ = generate_input_output(0, incremental)
-    sample_tokens = len(TOKENIZER.text_to_tokens(sample_input_text))
-    tokens_per_doc = sample_tokens / incremental
-
-    # Let's do 3x to allow for some slack since we can get unlucky due to sampling.
-    # NOTE: We should test this for really large sequence lengths to make sure it's reasonable.
-    estimated_max_docs = int((max_seq_length / tokens_per_doc) * 3)
-
-    # Binary search for optimal haystack size
-    lower_bound = incremental
-    upper_bound = max(estimated_max_docs, incremental * 2)  # Ensure upper_bound is reasonable
-
-    optimal_num_docs = None
-
-    logger.info(f"Estimated {tokens_per_doc:.1f} tokens per doc")
-    logger.info(f"Starting binary search with bounds: {lower_bound} to {upper_bound}")
-
-    while lower_bound <= upper_bound:
-        mid = (lower_bound + upper_bound) // 2
-        input_text, answer = generate_input_output(0, mid)
-        total_tokens = len(TOKENIZER.text_to_tokens(input_text)) + tokens_to_generate
-
-        logger.info(f"Testing haystack size: {mid}, resulting tokens: {total_tokens}/{max_seq_length}")
-
-        if total_tokens <= max_seq_length:
-            # This size works, can we go larger?
-            optimal_num_docs = mid
-            lower_bound = mid + 1
-        else:
-            # Too large, need to go smaller
-            upper_bound = mid - 1
-
-    num_docs = optimal_num_docs if optimal_num_docs is not None else incremental
-    logger.info(f'Final optimal haystack size (number of docs): {num_docs}')
-
+    
+    # Find the perfect num_docs
+    num_docs = incremental
+    
+    total_tokens = 0  # Track the total tokens generated for this example
+    while total_tokens + tokens_to_generate < max_seq_length :  
+        input_text, answer = generate_input_output(0, num_docs)
+        # Calculate the number of tokens in the example
+        total_tokens = len(TOKENIZER.text_to_tokens(input_text + f' {answer}'))
+        print(f'Max length {max_seq_length} | Current length {total_tokens + tokens_to_generate} | Docs: {num_docs}')
+        if total_tokens + tokens_to_generate > max_seq_length:
+            num_docs -= incremental
+            break
+            
+        num_docs += incremental
+        if num_docs > len(DOCS):
+            num_docs = len(DOCS)
+            break
+    print('Number of documents:', num_docs)
+    
     # Generate samples
     for index in tqdm(range(num_samples)):
         used_docs = num_docs
@@ -204,19 +179,15 @@ def generate_samples(num_samples: int, max_seq_length: int, save_dir: str, incre
             except:
                 if used_docs > incremental:
                     used_docs -= incremental
-
+        
         if args.remove_newline_tab:
             input_text = ' '.join(input_text.replace('\n', ' ').replace('\t', ' ').strip().split())
-        answer_prefix_index = input_text.rfind(TASKS['qa']['answer_prefix'][:10]) # use first 10 char of answer prefix to locate it
-        answer_prefix = input_text[answer_prefix_index:]
-        input_text = input_text[:answer_prefix_index]
+        
         formatted_output = {
             "index": index,
             "input": input_text,
             "outputs": answer,
-            "length": length,
-            'length_w_model_temp': length + args.model_template_token,
-            'answer_prefix': answer_prefix,
+            "length": length
         }
         write_jsons.append(formatted_output)
 
@@ -228,11 +199,11 @@ def main():
     save_file.parent.mkdir(parents=True, exist_ok=True)
 
     write_jsons = generate_samples(
-        num_samples=args.num_samples,
-        max_seq_length=args.max_seq_length,
+        num_samples=args.num_samples, 
+        max_seq_length=args.max_seq_length, 
         save_dir=args.save_dir
     )
-
+    
     write_manifest(save_file, write_jsons)
 
 if __name__=="__main__":

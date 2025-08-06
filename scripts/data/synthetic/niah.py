@@ -30,23 +30,18 @@ import re
 import json
 import uuid
 import argparse
+import importlib
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 import random
 import wonderwords
+from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 import sys
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")) 
 from tokenizer import select_tokenizer
-from manifest_utils import write_manifest
 from nltk.tokenize import sent_tokenize
-import logging
 
-logging.basicConfig(level=logging.INFO, force=True)
-logger = logging.getLogger(__name__)
-
-
-from constants import TASKS
 
 parser = argparse.ArgumentParser()
 # Basic Configurations
@@ -66,10 +61,9 @@ parser.add_argument("--remove_newline_tab", action='store_true', help='remove `\
 parser.add_argument("--num_needle_k", type=int, default=1)
 parser.add_argument("--num_needle_v", type=int, default=1)
 parser.add_argument("--num_needle_q", type=int, default=1)
-parser.add_argument("--type_haystack", type=str, default='essay', help='[Options] noise, essay, needle.')
+parser.add_argument("--type_haystack", type=str, default='essay', help='[Options] repeat, essay, needle.')
 parser.add_argument("--type_needle_k", type=str, default='words', help='[Options] numbers, words, uuids.')
 parser.add_argument("--type_needle_v", type=str, default='numbers', help='[Options] numbers, words, uuids.')
-parser.add_argument("--model_template_token", type=int, default=0, help='used for nemo skills, minus num of model template token')
 
 args = parser.parse_args()
 random.seed(args.random_seed)
@@ -79,13 +73,13 @@ args.num_needle_k = max(args.num_needle_k, args.num_needle_q)
 # Load Tokenizer
 TOKENIZER = select_tokenizer(args.tokenizer_type, args.tokenizer_path)
 
-# Define Needle/Haystack Format
+# Define Needle/Haystack Format 
 needle = "One of the special magic {type_needle_v} for {key} is: {value}."
 if args.type_haystack == 'essay':
     essay = os.path.join(os.path.dirname(os.path.abspath(__file__)), "json/PaulGrahamEssays.json")
     essay = json.load(open(essay))['text']
     haystack = re.sub(r'\s+', " ", essay).split(" ")
-elif args.type_haystack == 'noise':
+elif args.type_haystack == 'repeat':
     haystack = "The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again."
 elif args.type_haystack == 'needle':
     haystack = needle
@@ -136,22 +130,16 @@ def generate_input_output(num_haystack):
             value.append(generate_random(args.type_needle_v))
             needles.append(needle.format(
                 type_needle_v=args.type_needle_v,
-                key=keys[-1],
+                key=keys[-1], 
                 value=value[-1],
             ))
         values.append(value)
-
+    
     random.Random(args.random_seed).shuffle(needles)
-
+    
     # Context
     if args.type_haystack == 'essay':
         text = " ".join(haystack[:num_haystack])
-        if num_haystack <= len(haystack):
-            text = " ".join(haystack[:num_haystack])
-        else:
-            # Repeat haystack as many times as needed and slice to num_haystack
-            repeats = (num_haystack + len(haystack) - 1) // len(haystack)  # Ceiling division
-            text = " ".join((haystack * repeats)[:num_haystack])
         document_sents = sent_tokenize(text.strip())
         insertion_positions = [0] + \
                               sorted([int(len(document_sents) * (depth / 100)) for depth in random.sample(DEPTHS, len(needles))]) + \
@@ -166,7 +154,7 @@ def generate_input_output(num_haystack):
         context = " ".join(document_sents_list)
 
     else:
-        if args.type_haystack == 'noise':
+        if args.type_haystack == 'repeat':
             sentences = [haystack] * num_haystack
         elif args.type_haystack == 'needle':
             sentences = [haystack.format(
@@ -175,7 +163,7 @@ def generate_input_output(num_haystack):
                 value=generate_random(args.type_needle_v),
             ) for _ in range(num_haystack)]
 
-
+            
         indexes = sorted(random.sample(range(num_haystack), len(needles)), reverse=True)
         for index, element in zip(indexes, needles):
             sentences.insert(index, element)
@@ -187,7 +175,7 @@ def generate_input_output(num_haystack):
     queries = [keys[i] for i in indices]
     answers = [a for i in indices for a in values[i]]
     query = ', '.join(queries[:-1]) + ', and ' + queries[-1] if len(queries) > 1 else queries[0]
-
+    
     template = args.template
     type_needle_v = args.type_needle_v
     if args.num_needle_q * args.num_needle_v == 1:
@@ -209,56 +197,37 @@ def generate_input_output(num_haystack):
 def generate_samples(num_samples: int, max_seq_length: int, save_dir: str, incremental: int = 500):
     write_jsons = []
     tokens_to_generate = args.tokens_to_generate
-    max_seq_length -= args.model_template_token
 
     if args.type_haystack == 'essay':
         incremental = 500
-    elif args.type_haystack == 'noise':
+    elif args.type_haystack == 'repeat':
         incremental = 25
     elif args.type_haystack == 'needle':
         incremental = 25
-
+        
     if args.type_haystack != 'essay' and args.max_seq_length < 4096:
         incremental = 5
 
-    # Estimate tokens per question to determine reasonable upper bound
-    sample_input_text, _ = generate_input_output(incremental)
-    sample_tokens = len(TOKENIZER.text_to_tokens(sample_input_text))
-    tokens_per_haystack = sample_tokens / incremental
+    num_haystack = incremental
+        
+    total_tokens = 0  # Track the total tokens generated for the first example
+    while total_tokens + tokens_to_generate < max_seq_length :  
+        input_text, answer = generate_input_output(num_haystack)
+        # Calculate the number of tokens in the example
+        total_tokens = len(TOKENIZER.text_to_tokens(input_text + ' '.join(answer)))
+        print(f'Max length {max_seq_length} | Current length {total_tokens + tokens_to_generate} | Haystack: {num_haystack}')
+        if total_tokens + tokens_to_generate > max_seq_length:
+            num_haystack -= incremental
+            break
+    
+        if args.type_haystack == 'essay' and num_haystack > len(haystack):
+            num_haystack = len(haystack)
+            break
+        
+        num_haystack += incremental
 
-    # Let's do 3x to allow for some slack since we can get unlucky due to sampling.
-    # NOTE: We should test this for really large sequence lengths to make sure it's reasonable.
-    estimated_max_questions = int((max_seq_length / tokens_per_haystack) * 3)
-
-    # Binary search for optimal haystack size
-    lower_bound = incremental
-    upper_bound = max(estimated_max_questions, incremental * 2)  # Ensure upper_bound is reasonable
-
-    optimal_num_haystack = None
-
-    logger.info(f"Estimated {tokens_per_haystack:.1f} tokens per haystack")
-    logger.info(f"Starting binary search with bounds: {lower_bound} to {upper_bound}")
-
-    while lower_bound <= upper_bound:
-        mid = (lower_bound + upper_bound) // 2
-        input_text, answer = generate_input_output(mid)
-        total_tokens = len(TOKENIZER.text_to_tokens(input_text)) + tokens_to_generate
-
-        logger.info(f"Testing haystack size: {mid}, resulting tokens: {total_tokens}/{max_seq_length}")
-
-        if total_tokens <= max_seq_length:
-            # This size works, can we go larger?
-            optimal_num_haystack = mid
-            lower_bound = mid + 1
-        else:
-            # Too large, need to go smaller
-            upper_bound = mid - 1
-
-    num_haystack = optimal_num_haystack if optimal_num_haystack is not None else incremental
-    logger.info(f'Final optimal haystack size (number of haystack): {num_haystack}')
-
-
-
+    print('Num haystack:', num_haystack)
+    
     # Generate samples
     for index in tqdm(range(num_samples)):
         used_haystack = num_haystack
@@ -271,23 +240,15 @@ def generate_samples(num_samples: int, max_seq_length: int, save_dir: str, incre
             except:
                 if used_haystack > incremental:
                     used_haystack -= incremental
-
+        
         if args.remove_newline_tab:
             input_text = ' '.join(input_text.replace('\n', ' ').replace('\t', ' ').strip().split())
-        answer_prefix_index = input_text.rfind(TASKS['niah']['answer_prefix'][:10]) # use first 10 char of answer prefix to locate it
-        answer_prefix = input_text[answer_prefix_index:]
-        input_text = input_text[:answer_prefix_index]
-        # find answer position in text
-        index = input_text.find(answer[0])
-        token_position_answer = len(TOKENIZER.text_to_tokens(input_text[:index]))
+
         formatted_output = {
             'index': index,
             "input": input_text,
             "outputs": answer,
             "length": length,
-            'length_w_model_temp': length + args.model_template_token,
-            'answer_prefix': answer_prefix,
-            'token_position_answer': token_position_answer,
         }
         write_jsons.append(formatted_output)
 
@@ -297,8 +258,9 @@ def generate_samples(num_samples: int, max_seq_length: int, save_dir: str, incre
 def main():
     save_file = args.save_dir / f'{args.save_name}' / f'{args.subset}.jsonl'
     save_file.parent.mkdir(parents=True, exist_ok=True)
+
     write_jsons = generate_samples(
-        num_samples=args.num_samples,
+        num_samples=args.num_samples, 
         max_seq_length=args.max_seq_length,
         save_dir=args.save_dir
     )
